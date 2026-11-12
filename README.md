@@ -6,9 +6,13 @@
 
 ## 定位
 
-IoTNexus 是 anythings 体系内的独立 Go 微服务，提供**会话式查询、知识库检索与人工确认式控制**三类能力。它不进入毫秒级实时控制回路，也不替代 CC 的设备管理、规则引擎与命令状态机；所有控制动作都走「动作意图 → 用户确认 → CC 命令」的链路，只做增量。
+IoTNexus 是可以通过WS通道接入的独立 Go 微服务，提供**会话式查询、知识库检索与人工确认式控制**三类能力。它不进入毫秒级实时控制回路，也不替代IoT平台的设备管理、规则引擎与命令状态机；所有控制动作都走「动作意图 → 用户确认 → CC 命令」的链路，只做增量。
 
-功能开关默认关闭（`system.nx_assistant_enabled=false`），由 CC 的系统配置驱动，关闭时 NX 拒绝所有新请求，anythings 既有功能完全不受影响。
+## 业务设计
+
+![design](docs/nexus_design.png)
+
+IoT平台可以在内部创建特定的用户(如`nexus`)，并分配系统内的执行权限。按照Nexus的WebSocket API接入，包括告警事件、设备状态、动作提议等，并且需要响应Nexus执行请求。
 
 ## 架构总览
 
@@ -147,32 +151,6 @@ NATS 连接参数：`nats://127.0.0.1:4222`，无限重连，默认不配置 NAT
 | Embedding | Provider 三选一 | `Embed([texts]) → [[]float32]` | `local`（onnxruntime）/ `ollama`（HTTP）/ `openai`（HTTP） |
 
 模型客户端只实现 `chat/completions`，不实现 streaming —— 流式输出由 nexus 侧用非流式返回结果后按 runes 分片模拟。Tool call 定义直接内嵌在 assistant service 中，15 个工具随 system prompt 一起发送给模型。
-
-### 与 PostgreSQL 的交互
-
-所有 nexus 自身数据落在同一数据库的 **`nx` schema** 内，不和 CC 的 `cc` schema 混用。连接池由 `pgxpool` 管理，迁移文件在 `migrations/` 目录下，启动时按文件名顺序自动应用，记录写入 `nx.schema_migration`。
-
-**当前 nx schema 表结构：**
-
-| 表 | 迁移 | 说明 |
-| --- | --- | --- |
-| `nx.schema_migration` | 0001 | 迁移记录 |
-| `nx.session` | 0001 | 会话（user + space + title + status） |
-| `nx.message` | 0001 | 会话消息（user/assistant/tool + markdown metadata） |
-| `nx.task` | 0001 | 任务（goal + trigger_type + 状态机 + round_no + deadline） |
-| `nx.task_event` | 0001 | 任务轨迹事件（phase: OBSERVE/PLAN/ACT/REFLECT/EMIT） |
-| `nx.task_step` | 0001 | 工具调用步骤（idempotency_key 唯一索引） |
-| `nx.kb_document` | 0002 / 0005 | 知识库文档元数据（0005 增加 `storage_path`：原始文件相对路径） |
-| `nx.kb_chunk` | 0002 | 切片 + 向量（jsonb 存储） |
-| `nx.action_proposal` | 0003 | 动作提议（PENDING → CONFIRMING/EXECUTED/CANCELLED/EXPIRED/FAILED） |
-| `nx.audit_log` | 0003 | NX 侧审计 |
-| `nx.awaiting_confirmation` | 0004 | （预留，P1 用） |
-
-**当前实现的一个简化：** 向量不使用 pgvector 扩展，而是**应用侧拉全部 chunk 到内存做余弦相似度 + 关键词命中的混合排序**。这使得知识库可用规模受限于内存，但避免了引入 pgvector 依赖。知识检索流程见 `knowledge.Service.Search`：
-1. 拉取当前空间全部 chunk（上限 4000）
-2. 对 query 做嵌入（失败则降级为纯关键词）
-3. 余弦相似度 × 0.65 + 关键词命中 × 0.35 混合评分
-4. 排序取 Top N，返回 Citation 列表
 
 ### 与前端的交互
 
